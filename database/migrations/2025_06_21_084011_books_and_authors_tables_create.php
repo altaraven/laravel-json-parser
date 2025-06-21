@@ -50,6 +50,8 @@ return new class extends Migration
             $table->id();
             $table->string('name', 250);
 
+            $table->unique('name');
+
             $table->timestamps();
         });
 

@@ -7,9 +7,9 @@ namespace App\JsonParser;
 use App\Exceptions\InvalidConfigurationException;
 use App\JsonParser\Models\Author;
 use App\JsonParser\Models\Book;
+use App\JsonParser\Models\Category;
 use Cerbero\JsonParser\JsonParser;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 
@@ -17,8 +17,7 @@ readonly class Manager
 {
     public function __construct(
         private array $config
-    )
-    {
+    ) {
     }
 
     public function parseBooksResource(): void
@@ -29,12 +28,15 @@ readonly class Manager
             throw new InvalidConfigurationException('Variable [books_source_url] is not configured');
         }
 
-        $i = 0;
-
+        // instead of loading the whole JSON, we keep in memory only one key and value at a time
         foreach (new JsonParser($source) as $key => $value) {
-            // instead of loading the whole JSON, we keep in memory only one key and value at a time
-//            dd($key, $value);
-            $book = Book::ofIsbn(Arr::get($value, 'isbn'))->first();
+            //We cannot proceed without isbn since it is a unique book identifier
+            $isbn = Arr::get($value, 'isbn');
+            if (!$isbn) {
+                continue;
+            }
+
+            $book = Book::ofIsbn($isbn)->first();
 
             if (!$book) {
                 $book = new Book();
@@ -50,6 +52,7 @@ readonly class Manager
             $book->status = Arr::get($value, 'status');
             $book->save();
 
+            //Saving Author data
             $authorNames = array_values(array_filter(Arr::get($value, 'authors')));
 
             if (!empty($authorNames)) {
@@ -68,16 +71,30 @@ readonly class Manager
                 $book->authors()->sync($authorIds);
             }
 
-            $i++;
-            if ($i === 10) {
-                break;
+            //Saving Category data
+            $categoryNames = array_values(array_filter(Arr::get($value, 'categories')));
+
+            if (!empty($categoryNames)) {
+                $categoriesInsert = [];
+                foreach ($categoryNames as $name) {
+                    $categoriesInsert [] = [
+                        'name' => $name,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
+                }
+
+                Category::insertOrIgnore($categoriesInsert);
+
+                $categoryIds = Category::whereIn('name', $categoryNames)->pluck('id')->values()->toArray();
+                $book->categories()->sync($categoryIds);
             }
         }
     }
 
     public function getBooksPaginated(?string $search = null)
     {
-        return Book::with('authors')
+        return Book::with(['authors', 'categories'])
             ->when($search !== null, function (Builder $query) use ($search) {
                 $query
                     ->where(function (Builder $query) use ($search) {
@@ -94,7 +111,7 @@ readonly class Manager
 
     public function getBooksByAuthorIdPaginated(int $authorId)
     {
-        return Book::with('authors')
+        return Book::with(['authors', 'categories'])
             ->whereHas('authors', function (Builder $query) use ($authorId) {
                 $query->where('id', $authorId);
             })
